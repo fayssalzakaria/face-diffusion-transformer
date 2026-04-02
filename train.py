@@ -42,12 +42,27 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalisation des pixels entre [-1,1]
     ])
 
-    # **Chargement du dataset avec le DataLoader**
+    # **Calcul adaptatif du nombre de workers selon le matériel disponible**
+    # On prend min(nb_CPU, 8) pour éviter la surcharge sur les petites machines,
+    # et on tombe à 0 sur CPU-only (pas de gain à paralléliser sans GPU).
+    num_workers = min(os.cpu_count() or 1, 8) if device.type == "cuda" else 0
+    print(f"DataLoader : {num_workers} worker(s), prefetch_factor={'2' if num_workers > 0 else 'N/A'}")
+
+ 
+    # **Chargement du dataset avec le DataLoader optimisé**
     dataset = CustomDataset(root=data_dir, transform=transform)  # Création du dataset personnalisé
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)  
-    # - `shuffle=True` : Mélange les images à chaque époque
-    # - `num_workers=4` : Nombre de threads pour accélérer le chargement
-    # - `pin_memory=True` : Optimisation pour GPU
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        # --- Optimisations DataLoader ---
+        num_workers=num_workers,        # Adaptatif : évite les 4 workers inutiles sur CPU-only
+        pin_memory=(device.type == "cuda"),  # Transfert CPU→GPU plus rapide via mémoire paginée
+        persistent_workers=(num_workers > 0),  # Garde les workers vivants entre les époques (évite le fork à chaque époque)
+        prefetch_factor=2 if num_workers > 0 else None,  # Pré-charge 2 batches en avance pendant le calcul GPU
+        drop_last=True,  # Ignore le dernier batch incomplet pour des tailles stables (BCELoss plus stable)
+    )
+ 
 
     # **Initialisation des modèles**
     generator = Generator(z_dim, channels, feature_maps).to(device)  # Instanciation du générateur
@@ -95,40 +110,40 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
     for epoch in range(epochs):
         for batch_idx, (real_images, _) in enumerate(dataloader):  
             # Récupération d'un batch d'images réelles
-            real_images = real_images.to(device)
+            real_images = real_images.to(device, non_blocking=True)  # non_blocking tire parti de pin_memory
             batch_size = real_images.size(0)
 
             # **Création des labels pour l'entraînement**
             real_labels = torch.full((batch_size, 1), 0.9, device=device)  # Labels réels légèrement inférieurs à 1 (smoothing)
             fake_labels = torch.zeros(batch_size, 1, device=device)  # Labels pour les images générées (0)
 
-            # **Entraînement du discriminateur**
-            optimizer_D.zero_grad()  # Réinitialisation du gradient
+  # **Entraînement du discriminateur**
+            optimizer_D.zero_grad(set_to_none=True)  # set_to_none=True : plus rapide que zero_grad() classique
             output_real = discriminator(real_images)  # Prédiction sur les images réelles
             loss_real = criterion(output_real, real_labels)  # Calcul de la perte pour les réelles
-
+ 
             noise = torch.randn(batch_size, z_dim, 1, 1, device=device)  # Génération du bruit
             fake_images = generator(noise)  # Création des images synthétiques
             output_fake = discriminator(fake_images.detach())  # Prédiction sur les fausses images
             loss_fake = criterion(output_fake, fake_labels)  # Calcul de la perte pour les fausses images
-
+ 
             loss_D = loss_real + loss_fake  # Somme des pertes
             loss_D.backward()  # Rétropropagation
             optimizer_D.step()  # Mise à jour des poids du discriminateur
-
+ 
             # **Entraînement du générateur**
-            optimizer_G.zero_grad()  # Réinitialisation du gradient
+            optimizer_G.zero_grad(set_to_none=True)  # set_to_none=True : évite l'allocation de tenseurs nuls
             output_fake = discriminator(fake_images)  # Nouvelle prédiction sur les fausses images
             loss_G = criterion(output_fake, real_labels)  # Le générateur veut tromper le discriminateur
             loss_G.backward()  # Rétropropagation
             optimizer_G.step()  # Mise à jour des poids du générateur
-
+ 
             # Affichage des pertes toutes les 100 itérations
             if batch_idx % 100 == 0:
                 print(f"Epoch [{epoch+1}/{epochs}], Batch [{batch_idx}/{len(dataloader)}] - "
                       f"Loss D: {loss_D.item():.4f}, Loss G: {loss_G.item():.4f}")
-
+ 
         # Sauvegarde des images générées à la fin de chaque époque
         generate_and_save_images(epoch+1, fixed_noise)
-
+ 
     print("Entraînement terminé !")  # Indique la fin de l'entraînement
