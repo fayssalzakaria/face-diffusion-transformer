@@ -26,9 +26,9 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
     print(f"Mixed Precision (AMP) : {'activé' if use_amp else 'désactivé (CPU)'}")
     img_size = 128  # Taille des images (64x64 pixels)
     batch_size = 64 # Nombre d'images par batch
-    lambda_gp  = 10
+    lambda_gp  = 15
     n_critic   = 5
-    epochs = 50  # Nombre total d'époques d'entraînement
+    epochs = 100  # Nombre total d'époques d'entraînement
     z_dim = 100  # Taille du vecteur de bruit pour le générateur (latent space)
     channels = 3  # Nombre de canaux (RGB = 3)
     feature_maps = 64  # Nombre de cartes de caractéristiques dans le réseau
@@ -58,7 +58,7 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
 
  
     # **Chargement du dataset avec le DataLoader optimisé**
-    dataset = CustomDataset(root=data_dir, transform=transform)  # Création du dataset personnalisé
+    dataset = CustomDataset(root=data_dir, transform=transform,max_images=None)  # Création du dataset personnalisé
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -82,7 +82,7 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
     # - `lr=0.0001` : Taux d'apprentissage
     # - `betas=(0.5, 0.999)` : Paramètres de l'optimiseur Adam pour la stabilité
 
-    optimizer_C = optim.Adam(critic.parameters(), lr=0.0001, betas=(0.5, 0.999))  
+    optimizer_C = optim.Adam(critic.parameters(), lr=0.00005, betas=(0.5, 0.999))  
     scheduler_G = optim.lr_scheduler.CosineAnnealingLR(optimizer_G, T_max=epochs, eta_min=1e-5)
     scheduler_C = optim.lr_scheduler.CosineAnnealingLR(optimizer_C, T_max=epochs, eta_min=1e-5)
     #Ajout des scalers

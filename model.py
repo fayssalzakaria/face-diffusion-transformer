@@ -10,10 +10,12 @@ class Generator(nn.Module):
             nn.ConvTranspose2d(z_dim, feature_maps * 16, 4, 1, 0, bias=False),
             nn.BatchNorm2d(feature_maps * 16),
             nn.ReLU(True),
+            nn.Dropout2d(0.3),  # réduit les artefacts de couleur
             # 4x4 → 8x8
             nn.ConvTranspose2d(feature_maps * 16, feature_maps * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(feature_maps * 8),
             nn.ReLU(True),
+            nn.Dropout2d(0.3),  # réduit le surapprentissage
             # 8x8 → 16x16
             nn.ConvTranspose2d(feature_maps * 8, feature_maps * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(feature_maps * 4),
