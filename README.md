@@ -161,8 +161,8 @@ Le passage à 256×256 vise les **détails fins**. En 128, chaque token couvrait
 ## Installation
 
 ```bash
-git clone https://github.com/fayssalzakaria/Generation_de_visage_avec_DCGAN.git
-cd Generation_de_visage_avec_DCGAN
+git clone https://github.com/fayssalzakaria/face-diffusion-transformer.git
+cd face-diffusion-transformer
 python -m venv .venv
 .venv\Scripts\activate          # Linux / macOS : source .venv/bin/activate
 pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
