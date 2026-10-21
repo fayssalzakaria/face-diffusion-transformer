@@ -10,3 +10,4 @@ morphing_demo.gif
 # grandes grilles PNG des expériences : versions JPEG dans docs/images
 results*/grille_*.png
 results*/morphing.gif
+.gradio/
