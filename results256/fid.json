@@ -1,0 +1,31 @@
+{
+  "_num": 10000,
+  "Reconstruction VAE": {
+    "fid": 1.3167376518249512,
+    "sec_par_image": 0.04072768301963806
+  },
+  "DiT cfg=1 steps=50": {
+    "fid": 12.310565948486328,
+    "sec_par_image": 0.10380366389751434
+  },
+  "DiT cfg=1.5 steps=50": {
+    "fid": 10.876940727233887,
+    "sec_par_image": 0.17677688207626344
+  },
+  "DiT cfg=2 steps=50": {
+    "fid": 11.2718505859375,
+    "sec_par_image": 0.17419334728717803
+  },
+  "DiT-inconditionnel cfg=1 steps=50": {
+    "fid": 14.145979881286621,
+    "sec_par_image": 0.10089933576583862
+  },
+  "DiT cfg=1.5 steps=25": {
+    "fid": 12.263830184936523,
+    "sec_par_image": 0.1004615510225296
+  },
+  "WGAN-GP": {
+    "fid": 60.39706802368164,
+    "sec_par_image": 0.0001907257318496704
+  }
+}

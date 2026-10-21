@@ -14,8 +14,19 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
     from dataset import CustomDataset  # Importation du dataset personnalisé
     import matplotlib
     import time
+    import argparse
     mp.set_start_method('spawn', force=True)  # Force un démarrage propre des processus
     matplotlib.use('Agg')  # Désactive Tkinter
+
+    # **Arguments : durée de l'entraînement et reprise**
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--img_size", type=int, default=128, choices=[128, 256])
+    parser.add_argument("--max_hours", type=float, default=None,
+                        help="budget de temps : arrêt propre en fin d'époque une fois dépassé")
+    parser.add_argument("--resume", default=None, help="checkpoint complet (checkpoints/wgan_complet.pt)")
+    parser.add_argument("--max_images", type=int, default=None, help="sous-ensemble du dataset (tests rapides)")
+    args = parser.parse_args()
 
     # **Configuration des paramètres d'entraînement**
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Sélection du GPU si disponible, sinon CPU
@@ -24,11 +35,11 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
     use_amp = device.type == "cuda"
 
     print(f"Mixed Precision (AMP) : {'activé' if use_amp else 'désactivé (CPU)'}")
-    img_size = 128  # Taille des images (64x64 pixels)
+    img_size = args.img_size  # Taille des images (128 ou 256)
     batch_size = 64 # Nombre d'images par batch
     lambda_gp  = 15
     n_critic   = 5
-    epochs = 100  # Nombre total d'époques d'entraînement
+    epochs = args.epochs  # Nombre total d'époques d'entraînement
     z_dim = 100  # Taille du vecteur de bruit pour le générateur (latent space)
     channels = 3  # Nombre de canaux (RGB = 3)
     feature_maps = 64  # Nombre de cartes de caractéristiques dans le réseau
@@ -40,6 +51,7 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
 
     # Création d'un dossier pour stocker les images générées si non existant
     os.makedirs("generated_images", exist_ok=True)
+    os.makedirs("checkpoints", exist_ok=True)  # Poids du générateur, utilisés par evaluate_fid.py
 
     # **Définition des transformations à appliquer aux images**
     transform = transforms.Compose([
@@ -58,7 +70,7 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
 
  
     # **Chargement du dataset avec le DataLoader optimisé**
-    dataset = CustomDataset(root=data_dir, transform=transform,max_images=None)  # Création du dataset personnalisé
+    dataset = CustomDataset(root=data_dir, transform=transform,max_images=args.max_images)  # Création du dataset personnalisé
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -73,8 +85,8 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
  
 
     # **Initialisation des modèles**
-    generator = Generator(z_dim, channels, feature_maps).to(device)
-    critic = Critic(channels, feature_maps).to(device)
+    generator = Generator(z_dim, channels, feature_maps, img_size).to(device)
+    critic = Critic(channels, feature_maps, img_size).to(device)
     print("torch.compile : désactivé (Windows)")
     # **Définition de la fonction de perte et des optimisateurs**
     criterion = nn.BCEWithLogitsLoss()  # Fonction de perte pour la classification binaire (vrai/faux)
@@ -136,8 +148,20 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
   # **Création d'un vecteur de bruit fixe pour suivre la progression du modèle**
     fixed_noise = torch.randn(16, z_dim, 1, 1, device=device)
 
+    # **Reprise éventuelle : générateur, critique, optimiseurs, schedulers et scalers**
+    start_epoch, elapsed_total = 0, 0.0
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location=device)
+        for obj, key in [(generator, "generator"), (critic, "critic"), (optimizer_G, "optimizer_G"),
+                         (optimizer_C, "optimizer_C"), (scheduler_G, "scheduler_G"), (scheduler_C, "scheduler_C"),
+                         (scaler_G, "scaler_G"), (scaler_C, "scaler_C")]:
+            obj.load_state_dict(ckpt[key])
+        fixed_noise = ckpt["fixed_noise"]
+        start_epoch, elapsed_total = ckpt["epoch"], ckpt["elapsed_total"]
+        print(f"Reprise à l'époque {start_epoch}, {elapsed_total / 3600:.2f} h déjà écoulées")
+
     # **Boucle d'entraînement du GAN**
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         t0 = time.time()
         for batch_idx, (real_images, _) in enumerate(dataloader):
             # Récupération d'un batch d'images réelles
@@ -182,5 +206,18 @@ if __name__ == '__main__':  # Vérifie que le script est exécuté directement e
         current_lr = optimizer_G.param_groups[0]['lr']
         print(f"→ Epoch {epoch+1} terminée en {elapsed:.0f}s | LR: {current_lr:.6f}")
         generate_and_save_images(epoch+1, fixed_noise)
+        torch.save(generator.state_dict(), "checkpoints/wgan_generator.pt")
+        elapsed_total += elapsed
+        torch.save({"generator": generator.state_dict(), "critic": critic.state_dict(),
+                    "optimizer_G": optimizer_G.state_dict(), "optimizer_C": optimizer_C.state_dict(),
+                    "scheduler_G": scheduler_G.state_dict(), "scheduler_C": scheduler_C.state_dict(),
+                    "scaler_G": scaler_G.state_dict(), "scaler_C": scaler_C.state_dict(),
+                    "fixed_noise": fixed_noise, "epoch": epoch + 1, "elapsed_total": elapsed_total,
+                    "img_size": img_size},
+                   "checkpoints/wgan_complet.pt")
+        print(f"Temps d'entraînement cumulé : {elapsed_total / 3600:.2f} h")
+        if args.max_hours is not None and elapsed_total >= args.max_hours * 3600:
+            print(f"Budget de {args.max_hours} h atteint : arrêt à l'époque {epoch + 1}")
+            break
 
     print("Entraînement terminé !")

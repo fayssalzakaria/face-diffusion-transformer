@@ -1,72 +1,60 @@
+import math
 import torch
 import torch.nn as nn
 
-# Générateur WGAN-GP 128x128
+# WGAN-GP : la résolution (128 ou 256) fixe le nombre de couches.
+# Chaque couche double (générateur) ou divise par deux (critique) la taille de l'image.
+# En 128x128, l'architecture est identique à la version d'origine du projet ;
+# en 256x256, une couche supplémentaire est ajoutée de chaque côté (feature_maps // 2 canaux).
+
+
+def _channels(feature_maps, img_size):
+    """Canaux à chaque résolution, de 4x4 jusqu'à img_size/2 : fm*16, fm*8, ..., fm, (fm/2)."""
+    n = int(math.log2(img_size // 4))  # nombre de doublements de 4x4 à img_size
+    return [max(feature_maps * 16 // 2 ** i, feature_maps // 2) for i in range(n)]
+
+
+# Générateur WGAN-GP
 class Generator(nn.Module):
-    def __init__(self, z_dim, channels, feature_maps):
+    def __init__(self, z_dim, channels, feature_maps, img_size=128):
         super(Generator, self).__init__()
-        self.net = nn.Sequential(
+        ch = _channels(feature_maps, img_size)
+        layers = [
             # (z_dim, 1, 1) → 4x4
-            nn.ConvTranspose2d(z_dim, feature_maps * 16, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(feature_maps * 16),
+            nn.ConvTranspose2d(z_dim, ch[0], 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ch[0]),
             nn.ReLU(True),
             nn.Dropout2d(0.3),  # réduit les artefacts de couleur
-            # 4x4 → 8x8
-            nn.ConvTranspose2d(feature_maps * 16, feature_maps * 8, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_maps * 8),
-            nn.ReLU(True),
-            nn.Dropout2d(0.3),  # réduit le surapprentissage
-            # 8x8 → 16x16
-            nn.ConvTranspose2d(feature_maps * 8, feature_maps * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_maps * 4),
-            nn.ReLU(True),
-            # 16x16 → 32x32
-            nn.ConvTranspose2d(feature_maps * 4, feature_maps * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_maps * 2),
-            nn.ReLU(True),
-            # 32x32 → 64x64
-            nn.ConvTranspose2d(feature_maps * 2, feature_maps, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_maps),
-            nn.ReLU(True),
-            # 64x64 → 128x128
-            nn.ConvTranspose2d(feature_maps, channels, 4, 2, 1, bias=False),
-            nn.Tanh()
-        )
+        ]
+        for i in range(1, len(ch)):
+            # résolution × 2
+            layers += [nn.ConvTranspose2d(ch[i - 1], ch[i], 4, 2, 1, bias=False), nn.BatchNorm2d(ch[i]), nn.ReLU(True)]
+            if i == 1:
+                layers.append(nn.Dropout2d(0.3))  # réduit le surapprentissage
+        # dernière couche → image RGB img_size x img_size
+        layers += [nn.ConvTranspose2d(ch[-1], channels, 4, 2, 1, bias=False), nn.Tanh()]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, z):
         return self.net(z)
 
 
-# Critique WGAN-GP (pas de Sigmoid, pas de BatchNorm → remplacé par LayerNorm)
+# Critique WGAN-GP (pas de Sigmoid, InstanceNorm au lieu de BatchNorm : compatible avec le gradient penalty)
 # Le critique prédit un score réel (pas une probabilité)
-# LayerNorm à la place de BatchNorm : compatible avec le gradient penalty
 class Critic(nn.Module):
-    def __init__(self, channels, feature_maps):
+    def __init__(self, channels, feature_maps, img_size=128):
         super(Critic, self).__init__()
         SN = nn.utils.spectral_norm
-        self.net = nn.Sequential(
-            # 128x128 → 64x64
-            SN(nn.Conv2d(channels, feature_maps, 4, 2, 1, bias=False)),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 64x64 → 32x32
-            SN(nn.Conv2d(feature_maps, feature_maps * 2, 4, 2, 1, bias=False)),
-            nn.InstanceNorm2d(feature_maps * 2, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 32x32 → 16x16
-            SN(nn.Conv2d(feature_maps * 2, feature_maps * 4, 4, 2, 1, bias=False)),
-            nn.InstanceNorm2d(feature_maps * 4, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 16x16 → 8x8
-            SN(nn.Conv2d(feature_maps * 4, feature_maps * 8, 4, 2, 1, bias=False)),
-            nn.InstanceNorm2d(feature_maps * 8, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 8x8 → 4x4
-            SN(nn.Conv2d(feature_maps * 8, feature_maps * 16, 4, 2, 1, bias=False)),
-            nn.InstanceNorm2d(feature_maps * 16, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 4x4 → scalaire
-            SN(nn.Conv2d(feature_maps * 16, 1, 4, 1, 0, bias=False)),
-        )
+        ch = _channels(feature_maps, img_size)[::-1]  # de img_size/2 jusqu'à 4x4
+        # img_size → img_size/2 (pas de normalisation sur la première couche)
+        layers = [SN(nn.Conv2d(channels, ch[0], 4, 2, 1, bias=False)), nn.LeakyReLU(0.2, inplace=True)]
+        for i in range(1, len(ch)):
+            # résolution / 2
+            layers += [SN(nn.Conv2d(ch[i - 1], ch[i], 4, 2, 1, bias=False)),
+                       nn.InstanceNorm2d(ch[i], affine=True), nn.LeakyReLU(0.2, inplace=True)]
+        # 4x4 → scalaire
+        layers.append(SN(nn.Conv2d(ch[-1], 1, 4, 1, 0, bias=False)))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, img):
         return self.net(img).view(-1)

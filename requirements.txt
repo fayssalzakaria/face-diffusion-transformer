@@ -1,5 +1,12 @@
 numpy
 matplotlib
 Pillow
-kaggle
+tqdm
 kagglehub
+diffusers
+open_clip_torch
+torchmetrics
+torch-fidelity
+scipy
+gradio
+accelerate
