@@ -4,8 +4,8 @@ Ce projet a commencé comme un **DCGAN** (64×64), puis est devenu un **WGAN-GP*
 
 Le DiT (130M de paramètres) est **implémenté et entraîné de zéro** en PyTorch sur FFHQ en 256×256. Il est **contrôlable par 7 attributs** (sourire, lunettes, âge, etc.) et il est comparé au WGAN-GP entraîné dans les mêmes conditions.
 
-![Images réelles, WGAN-GP et DiT](docs/images/comparaison_reel_wgan_dit.jpg)
-*Ligne 1 : vraies photos FFHQ. Ligne 2 : WGAN-GP. Ligne 3 : DiT. Tirages non choisis : les graines sont fixées dans le code.*
+![Visages générés par le DiT en 256×256](docs/images/vitrine_dit256.jpg)
+*16 personnes qui n'existent pas, générées par le DiT en 256×256. Tirages non choisis (graine 2026), avec des attributs tirés de la distribution réelle et un guidance de 3.*
 
 ---
 
@@ -33,6 +33,11 @@ Le FID (Fréchet Inception Distance) compare les statistiques (moyenne et covari
 ---
 
 ## Comparaison des deux approches
+
+![Images réelles, WGAN-GP et DiT](docs/images/comparaison_reel_wgan_dit.jpg)
+*Ligne 1 : vraies photos FFHQ. Ligne 2 : WGAN-GP. Ligne 3 : DiT **sans consigne**, dans les mêmes conditions que le WGAN-GP. Tirages non choisis : les graines sont fixées dans le code.*
+
+Les visages du WGAN-GP restent reconnaissables, mais ils portent des **artefacts de texture en damier** et des arrière-plans brouillés. Ceux du DiT ont une peau, des cheveux et des arrière-plans plus naturels, avec encore quelques ratés.
 
 | | WGAN-GP | Diffusion Transformer |
 |---|---|---|
