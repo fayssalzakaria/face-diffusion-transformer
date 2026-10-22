@@ -1,11 +1,11 @@
 """
 Pré-calcule une fois pour toutes, sur tout FFHQ :
-  1. les latents VAE (image 128x128 et sa version miroir) ;
-  2. les attributs de chaque visage, annotés en zero-shot par CLIP ViT-L/14.
-Le DiT s'entraîne ensuite uniquement sur ces latents (≈200 Mo en mémoire GPU),
-sans relire les images ni repasser par le VAE : l'entraînement est bien plus rapide.
+  1. les latents VAE de chaque image et de sa version miroir (augmentation gratuite) ;
+  2. 7 attributs par visage, annotés en zero-shot par CLIP ViT-L/14.
+Le DiT s'entraîne ensuite sur ces latents (213 Mo en 128 px, 855 Mo en 256 px)
+sans jamais relire une image : c'est ce qui rend l'entraînement rapide.
 
-Usage : python prepare_latents.py --data_dir data/ffhq
+Usage : python prepare_latents.py --img_size 256 --out data/latents_ffhq256.pt
 """
 import argparse
 import os
@@ -22,7 +22,7 @@ CLIP_STD = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
 
 
 class TwoViews:
-    """Renvoie l'image 128x128 (pour le VAE) et l'image 224x224 (pour CLIP)."""
+    """Chaque image en deux tailles : img_size pour le VAE, 224 px pour CLIP."""
 
     def __init__(self, img_size):
         self.small = transforms.Compose([transforms.Resize(img_size), transforms.CenterCrop(img_size),
@@ -54,7 +54,7 @@ def main():
     clip_model = clip_model.to(device).eval()
     tokenizer = open_clip.get_tokenizer("ViT-L-14")
     with torch.no_grad():
-        # Par attribut : embeddings des prompts positifs puis négatifs, et nombre de positifs
+        # Textes encodés une seule fois : prompts positifs puis négatifs, pour chaque attribut
         text_feats = []
         for _, pos, neg in ATTRIBUTES:
             t = clip_model.encode_text(tokenizer(pos + neg).to(device)).float()
@@ -71,13 +71,13 @@ def main():
                 big = (big.to(device) - CLIP_MEAN.to(device)) / CLIP_STD.to(device)
                 img_feats = clip_model.encode_image(big).float()
             img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
-            # P(attribut) = masse de probabilité des prompts positifs (softmax, température CLIP = 100)
+            # P(attribut) = part de probabilité des prompts positifs face aux négatifs (température CLIP = 100)
             probs.append(torch.stack([(100 * img_feats @ t.T).softmax(dim=-1)[:, :n_pos].sum(dim=-1)
                                       for t, n_pos in text_feats], dim=1).cpu())
 
     latents = torch.cat(latents)
     probs = torch.cat(probs)
-    # Statistiques par canal pour normaliser les latents à moyenne 0, variance 1
+    # Moyenne et écart-type par canal : le DiT travaille sur des latents centrés réduits
     mean = latents.float().mean(dim=(0, 2, 3))
     std = latents.float().std(dim=(0, 2, 3))
     torch.save({

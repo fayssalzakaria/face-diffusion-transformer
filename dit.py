@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Diffusion Transformer (DiT, Peebles & Xie 2023) en espace latent
-# Entrée : latents VAE (4, 16, 16) → patchs 2x2 → 64 tokens
-# Conditionnement : pas de temps + attributs du visage via adaLN-Zero
+# Diffusion Transformer (Peebles & Xie, 2023) en espace latent.
+# Le latent du VAE (4×16×16 en 128 px, 4×32×32 en 256 px) est découpé en patchs 2×2 :
+# 64 ou 256 tokens. Le temps t et les attributs règlent chaque bloc via adaLN-Zero.
 
 
 def modulate(x, shift, scale):
+    """Décalage et mise à l'échelle des tokens, réglés par la consigne (le cœur d'adaLN)."""
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
@@ -25,6 +26,7 @@ class TimestepEmbedder(nn.Module):
         )
 
     def forward(self, t):
+        # Même principe que l'encodage de position des Transformers, appliqué au temps
         half = self.freq_size // 2
         freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
         args = (t.float() * 1000)[:, None] * freqs[None]
@@ -53,6 +55,8 @@ class AttributeEmbedder(nn.Module):
 
 
 class DiTBlock(nn.Module):
+    """Attention (les tokens échangent entre eux) puis MLP (chaque token se met à jour), réglés par c."""
+
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
         super().__init__()
         self.num_heads = num_heads
@@ -66,16 +70,17 @@ class DiTBlock(nn.Module):
             nn.GELU(approximate="tanh"),
             nn.Linear(mlp_hidden, hidden_size),
         )
-        # adaLN-Zero : 6 vecteurs (shift, scale, gate) × (attention, MLP)
+        # adaLN-Zero : la consigne produit 6 vecteurs, (décalage, échelle, porte) × (attention, MLP)
         self.adaLN = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size))
 
     def attention(self, x):
         B, N, C = x.shape
         qkv = self.qkv(x).view(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # Flash attention si dispo
+        out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # version optimisée (Flash) si dispo
         return self.proj(out.transpose(1, 2).reshape(B, N, C))
 
     def forward(self, x, c):
+        # Connexions résiduelles : chaque bloc ajoute une correction, dosée par sa « porte »
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = self.adaLN(c).chunk(6, dim=-1)
         x = x + gate_a.unsqueeze(1) * self.attention(modulate(self.norm1(x), shift_a, scale_a))
         x = x + gate_m.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_m, scale_m))
@@ -83,6 +88,8 @@ class DiTBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
+    """Retransforme chaque token en un patch du latent."""
+
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -103,7 +110,8 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.num_patches = (input_size // patch_size) ** 2
 
-        self.patch_embed = nn.Conv2d(in_channels, hidden_size, patch_size, patch_size)
+        self.patch_embed = nn.Conv2d(in_channels, hidden_size, patch_size, patch_size)  # découpe + projection
+        # Position fixe (non apprise) : recalculable pour une autre résolution, d'où le transfert 128 → 256
         self.pos_embed = nn.Parameter(self._sincos_pos_embed(hidden_size), requires_grad=False)
         self.t_embed = TimestepEmbedder(hidden_size)
         self.attr_embed = AttributeEmbedder(num_attributes, hidden_size)
@@ -134,7 +142,7 @@ class DiT(nn.Module):
         nn.init.zeros_(self.patch_embed.bias)
         nn.init.normal_(self.t_embed.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embed.mlp[2].weight, std=0.02)
-        # adaLN-Zero : chaque bloc démarre comme l'identité
+        # adaLN-Zero : portes et sortie à zéro, chaque bloc démarre comme l'identité (entraînement stable)
         for block in self.blocks:
             nn.init.zeros_(block.adaLN[-1].weight)
             nn.init.zeros_(block.adaLN[-1].bias)
@@ -144,11 +152,13 @@ class DiT(nn.Module):
         nn.init.zeros_(self.final.linear.bias)
 
     def unpatchify(self, x):
+        """Tokens → latent : recolle les patchs à leur place dans la grille."""
         p, g, c = self.patch_size, self.input_size // self.patch_size, self.in_channels
         x = x.view(x.shape[0], g, g, p, p, c)
         return torch.einsum("nhwpqc->nchpwq", x).reshape(x.shape[0], c, g * p, g * p)
 
     def forward(self, x, t, attrs):
+        """Prédit la vitesse v = bruit − image : la direction à suivre vers une image propre."""
         x = self.patch_embed(x).flatten(2).transpose(1, 2) + self.pos_embed
         c = self.t_embed(t) + self.attr_embed(attrs)
         for block in self.blocks:

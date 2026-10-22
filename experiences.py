@@ -11,11 +11,11 @@ FID = distance entre les statistiques (moyenne, covariance) des features Incepti
 des images réelles et générées. Plus bas = meilleur. Les statistiques des images
 réelles sont calculées UNE fois puis réutilisées pour toutes les mesures.
 
-Les résultats déjà calculés sont gardés dans results/fid.json : si le script est
-interrompu, on le relance et il reprend là où il s'était arrêté.
+Chaque mesure terminée est gardée dans <out>/fid.json : si le script est interrompu,
+il reprend là où il s'était arrêté.
 
-Usage : python experiences.py                    (≈ 1 h sur RTX 4070)
-        python experiences.py --num 5000         (≈ 2x plus rapide, un peu moins précis)
+Usage : python experiences.py --dit_ckpt runs/dit256/last.pt --out results256 --cfgs 1 1.5 2
+        (≈ 2 h en 256 px sur RTX 4070 ; --num 5000 pour aller 2x plus vite)
 """
 import argparse
 import json

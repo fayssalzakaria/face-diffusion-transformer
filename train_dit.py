@@ -4,7 +4,8 @@ Entraîne le Diffusion Transformer sur les latents FFHQ pré-calculés (prepare_
 Objectif : flow matching / rectified flow (comme Stable Diffusion 3)
   x_t = (1 - t) · x_0 + t · ε      v_cible = ε − x_0      perte = ||v_θ(x_t, t, a) − v_cible||²
 
-Usage : python train_dit.py --model B --steps 150000
+Usage : python train_dit.py --model B --batch_size 192 --steps 135000 --decay_start 80000
+        (phase 2 en 256 px : voir le README, avec --init_from pour repartir de la phase 1)
 """
 import argparse
 import copy
@@ -40,11 +41,11 @@ def drop_attributes(attrs, p_all=0.1, p_each=0.15):
 @torch.no_grad()
 def transfer_weights(model, path):
     """
-    Initialise un DiT depuis un autre DiT de même taille, éventuellement avec une autre taille de patch.
-    Les blocs Transformer et les embeddings (temps, attributs) sont copiés tels quels.
-    Pour passer de patchs p×p à des patchs plus petits, on convertit l'entrée et la sortie :
-      - entrée : somme du noyau p×p (réponse à une zone uniforme) → noyau 1×1 équivalent
-      - sortie : moyenne des p×p prédictions de chaque token → une prédiction par pixel latent
+    Initialise un DiT depuis un DiT déjà entraîné de même taille (ex. 128 px → 256 px).
+    Tous les poids sont copiés ; seul l'encodage de position est recalculé pour la nouvelle grille.
+    Si la taille de patch diminue, l'entrée et la sortie sont converties :
+      - entrée : somme du noyau p×p → noyau plus petit équivalent
+      - sortie : moyenne des prédictions de chaque patch
     """
     src = torch.load(path, map_location="cpu")
     weights = src["ema"]
@@ -69,6 +70,7 @@ def transfer_weights(model, path):
 
 @torch.no_grad()
 def update_ema(ema, model, decay):
+    """Moyenne glissante des poids : plus stable que les poids bruts, c'est elle qui sert à générer."""
     for p_ema, p in zip(ema.parameters(), model.parameters()):
         p_ema.lerp_(p, 1 - decay)
 
@@ -99,8 +101,8 @@ def main():
     device = torch.device("cuda")
     os.makedirs(f"{args.out_dir}/samples", exist_ok=True)
 
-    # Tout le dataset est en mémoire : pas de DataLoader, pas de lecture d'images.
-    # En 128 (213 Mo) il tient sur le GPU ; en 256 (850 Mo) on le garde en RAM pour laisser la place au modèle.
+    # Tout le dataset est en mémoire, sans DataLoader : en 128 px il tient sur le GPU,
+    # en 256 px on le garde en RAM pour laisser la place au modèle.
     data = torch.load(args.latents)
     mean, std = data["mean"].view(1, -1, 1, 1).to(device), data["std"].view(1, -1, 1, 1).to(device)
     latents = torch.stack([data["latents"], data["latents_flip"]])  # (2, N, 4, H, W)
@@ -120,17 +122,17 @@ def main():
 
     step = 0
     if args.resume:
-        # Chargé sur CPU puis libéré : sinon 2 Go restent sur le GPU et la mémoire déborde
+        # Chargé sur CPU puis libéré : chargé sur le GPU, il y occuperait 2 Go pendant tout l'entraînement
         ckpt = torch.load(args.resume, map_location="cpu")
         model.load_state_dict(ckpt["model"])
         ema.load_state_dict(ckpt["ema"])
-        optimizer.load_state_dict(ckpt["optimizer"])  # les états Adam sont déplacés sur le GPU des paramètres
+        optimizer.load_state_dict(ckpt["optimizer"])
         step = ckpt["step"]
         del ckpt
         torch.cuda.empty_cache()
         print(f"Reprise à l'étape {step}")
 
-    # Grille de suivi : mêmes bruits et mêmes attributs à chaque fois
+    # Grille de suivi : mêmes bruits et mêmes attributs à chaque fois, pour comparer les étapes
     vae = load_vae(device)
     g = torch.Generator(device=device).manual_seed(0)
     fixed_attrs = attrs_all[torch.randperm(N, device=device, generator=g)[:16]]
@@ -142,7 +144,7 @@ def main():
                     "attr_names": data["attr_names"], "mean": data["mean"], "std": data["std"]}, path)
 
     def lr_at(step):
-        """Montée linéaire (warmup), LR constant, puis décroissance en cosinus : le modèle "se pose"."""
+        """Warmup linéaire, plateau, puis décroissance en cosinus : sans elle, la perte stagnait."""
         if step < args.warmup:
             return args.lr * (step + 1) / args.warmup
         if args.decay_start is None or step < args.decay_start:
@@ -160,7 +162,8 @@ def main():
         x0 = (latents[flip, idx].to(device, non_blocking=True).float() - mean) / std
         attrs = drop_attributes(attrs_all[idx.to(device)])
 
-        # t ~ logit-normal : plus d'échantillons aux niveaux de bruit intermédiaires (SD3)
+        # Flow matching : mélange image / bruit au niveau t, le modèle prédit la vitesse (bruit − image).
+        # t logit-normal (comme SD3) : on insiste sur les niveaux de bruit intermédiaires, les plus utiles.
         t = torch.sigmoid(torch.randn(args.batch_size, device=device))
         noise = torch.randn_like(x0)
         t_ = t.view(-1, 1, 1, 1)
@@ -174,7 +177,7 @@ def main():
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        update_ema(ema, model, args.ema_decay if step > 1000 else 0.0)
+        update_ema(ema, model, args.ema_decay if step > 1000 else 0.0)  # simple copie au début
         step += 1
 
         if step % 100 == 0:

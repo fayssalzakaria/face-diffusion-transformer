@@ -1,12 +1,12 @@
 import torch
 from diffusers import AutoencoderKL
 
-# VAE pré-entraîné de Stable Diffusion : image 128x128x3 → latent 16x16x4 (facteur 8)
+# VAE pré-entraîné de Stable Diffusion, utilisé figé : divise la taille par 8 (256×256×3 → 32×32×4)
 VAE_ID = "stabilityai/sd-vae-ft-ema"
 
-# Attributs annotés automatiquement par CLIP ViT-L/14 (zero-shot) : (nom, prompts positifs, prompts négatifs).
-# Les prompts négatifs évitent la négation ("sans chapeau"), que CLIP comprend mal : on décrit une alternative.
-# Vérifiés visuellement sur un échantillon ; la couleur de cheveux a été écartée (annotation trop bruitée).
+# Attributs annotés par CLIP ViT-L/14 en zero-shot : (nom, prompts positifs, prompts négatifs).
+# Les négatifs décrivent une alternative plutôt qu'une négation (« sans chapeau ») : CLIP comprend mal la négation.
+# Annotations vérifiées à l'œil ; la couleur des cheveux a été retirée car trop peu fiable.
 ATTRIBUTES = [
     ("homme", ["a photo of a man"], ["a photo of a woman"]),
     ("souriant", ["a photo of a person smiling", "a photo of a person laughing"],
